@@ -128,46 +128,97 @@ def delete_duplicates(df_can: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
     if all(c in work.columns for c in ["Address1", "City", "State", "Zip"]):
         addr_key = work.apply(lambda r: _normalize_address_key(r.get("Address1"), r.get("City"), r.get("State"), r.get("Zip")), axis=1)
 
-    # Pass 1: VIN-only dedupe (valid VINs). Keep most recent DeliveryDate.
+    # Track address groups to prune if VIN-pass dropped a newer row than any remaining at that address
+    prune_addr_keys: set[str] = set()
+
+    # Pass 1: VIN-only dedupe (valid VINs). Keep most recent DeliveryDate with deterministic tiebreaks.
     if vin_valid.any():
         with_vin = work.loc[vin_valid].copy()
         without_vin = work.loc[~vin_valid].copy()
 
-        def pick_idx_vin(group: pd.DataFrame) -> int:
-            dn_flag = group.get("Deal_Number", pd.Series([""]*len(group), index=group.index)).fillna("").astype(str).str.strip() != ""
-            order = group["___ORDER"]
-            sort_df = group.copy()
-            sort_df["__DN_FLAG"] = dn_flag.astype(int)
-            # Sort by date asc to handle NaT as smallest, then DN flag asc to keep rows with DN last, then order asc
-            sort_df = sort_df.sort_values(["___DATE", "__DN_FLAG", "___ORDER"], ascending=[True, True, True])
-            # Take last (max date, has DN, latest order)
-            return sort_df.index[-1]
+        # Helper tie-break columns
+        if "Deal_Number" in with_vin.columns:
+            with_vin["__HAS_DEAL"] = _safe_str(with_vin["Deal_Number"]).ne("")
+            with_vin["__DN_NUM"] = pd.to_numeric(_safe_str(with_vin["Deal_Number"]), errors="coerce")
+        else:
+            with_vin["__HAS_DEAL"] = False
+            with_vin["__DN_NUM"] = pd.Series([pd.NA] * len(with_vin))
+        with_vin["__DN_NUM_FILLED"] = with_vin["__DN_NUM"].astype(float).fillna(float("-inf"))
 
         with_vin["___VIN_UP"] = _safe_str(with_vin["VIN"]).str.upper()
-        keep_indices_vin = with_vin.groupby("___VIN_UP", sort=False).apply(pick_idx_vin).values.tolist()
-        with_vin_dedup = with_vin.loc[keep_indices_vin]
-        work = pd.concat([with_vin_dedup, without_vin], ignore_index=False)
+        # Sort within groups then take the last row per VIN
+        with_vin_sorted = with_vin.sort_values(
+            ["___VIN_UP", "___DATE", "__HAS_DEAL", "__DN_NUM_FILLED", "___ORDER"],
+            ascending=[True, True, True, True, True],
+        )
+        with_vin_dedup = with_vin_sorted.groupby("___VIN_UP", sort=False).tail(1)
+        # Identify VIN-dropped rows and compute address keys for pruning logic
+        dropped_vin = with_vin.loc[~with_vin.index.isin(with_vin_dedup.index)].copy()
+        if not dropped_vin.empty and all(c in with_vin.columns for c in ["Address1", "City", "State", "Zip"]):
+            dropped_vin["___ADDR_KEY_FOR_DROP"] = dropped_vin.apply(
+                lambda r: _normalize_address_key(r.get("Address1"), r.get("City"), r.get("State"), r.get("Zip")), axis=1
+            )
+        # Remaining after VIN-pass
+        remaining_after_vin = pd.concat([with_vin_dedup, without_vin], ignore_index=False)
+        if not dropped_vin.empty:
+            # Compute address keys and max date among remaining for comparison
+            if all(c in remaining_after_vin.columns for c in ["Address1", "City", "State", "Zip"]):
+                rem_addr_keys = remaining_after_vin.apply(
+                    lambda r: _normalize_address_key(r.get("Address1"), r.get("City"), r.get("State"), r.get("Zip")), axis=1
+                )
+                rem_dates = remaining_after_vin["___DATE"]
+                max_date_by_addr = pd.Series(rem_dates.values, index=rem_addr_keys).groupby(level=0).max()
+                for _, r in dropped_vin.iterrows():
+                    k = r.get("___ADDR_KEY_FOR_DROP", "")
+                    if not k:
+                        continue
+                    drop_date = r.get("___DATE")
+                    rem_max = max_date_by_addr.get(k, pd.NaT)
+                    try:
+                        if pd.notna(drop_date) and (pd.isna(rem_max) or drop_date > rem_max):
+                            prune_addr_keys.add(k)
+                    except Exception:
+                        # Fallback safe compare via string
+                        if str(drop_date) > str(rem_max):
+                            prune_addr_keys.add(k)
+        # Update work to remaining
+        work = remaining_after_vin
 
-    # Pass 2: Address-only dedupe. Keep most recent DeliveryDate.
+    # Pass 2: Address-only dedupe. Keep most recent DeliveryDate with deterministic tiebreaks.
     addr_mask = addr_key != ""
     if addr_mask.any():
         with_addr = work.loc[addr_mask].copy()
+        # If VIN-pass dropped a newer row at an address, prune that whole address group here
+        if prune_addr_keys:
+            with_addr["___ADDR_KEY"] = with_addr.apply(lambda r: _normalize_address_key(r.get("Address1"), r.get("City"), r.get("State"), r.get("Zip")), axis=1)
+            with_addr = with_addr.loc[~with_addr["___ADDR_KEY"].isin(prune_addr_keys)].copy()
+            # Recompute mask for without_addr based on pruning
+            without_addr = work.loc[~addr_mask].copy()
+        else:
+            without_addr = work.loc[~addr_mask].copy()
         without_addr = work.loc[~addr_mask].copy()
 
-        def pick_idx_addr(group: pd.DataFrame) -> int:
-            dn_flag = group.get("Deal_Number", pd.Series([""]*len(group), index=group.index)).fillna("").astype(str).str.strip() != ""
-            sort_df = group.copy()
-            sort_df["__DN_FLAG"] = dn_flag.astype(int)
-            sort_df = sort_df.sort_values(["___DATE", "__DN_FLAG", "___ORDER"], ascending=[True, True, True])
-            return sort_df.index[-1]
+        # Helper tie-break columns
+        if "Deal_Number" in with_addr.columns:
+            with_addr["__HAS_DEAL"] = _safe_str(with_addr["Deal_Number"]).ne("")
+            with_addr["__DN_NUM"] = pd.to_numeric(_safe_str(with_addr["Deal_Number"]), errors="coerce")
+        else:
+            with_addr["__HAS_DEAL"] = False
+            with_addr["__DN_NUM"] = pd.Series([pd.NA] * len(with_addr))
+        with_addr["__DN_NUM_FILLED"] = with_addr["__DN_NUM"].astype(float).fillna(float("-inf"))
 
-        with_addr["___ADDR_KEY"] = with_addr.index.map(addr_key)
-        keep_indices_addr = with_addr.groupby("___ADDR_KEY", sort=False).apply(pick_idx_addr).values.tolist()
-        with_addr_dedup = with_addr.loc[keep_indices_addr]
+        if "___ADDR_KEY" not in with_addr.columns:
+            with_addr["___ADDR_KEY"] = with_addr.apply(lambda r: _normalize_address_key(r.get("Address1"), r.get("City"), r.get("State"), r.get("Zip")), axis=1)
+
+        with_addr_sorted = with_addr.sort_values(
+            ["___ADDR_KEY", "___DATE", "__HAS_DEAL", "__DN_NUM_FILLED", "___ORDER"],
+            ascending=[True, True, True, True, True],
+        )
+        with_addr_dedup = with_addr_sorted.groupby("___ADDR_KEY", sort=False).tail(1)
         work = pd.concat([with_addr_dedup, without_addr], ignore_index=False)
 
     # Cleanup helper cols
-    work = work.drop(columns=[c for c in ["___DATE", "___ORDER", "___VIN_UP", "___ADDR_KEY"] if c in work.columns])
+    work = work.drop(columns=[c for c in ["___DATE", "___ORDER", "___VIN_UP", "___ADDR_KEY", "__HAS_DEAL", "__DN_NUM", "__DN_NUM_FILLED"] if c in work.columns])
     removed = initial - len(work)
     return work, removed
 
