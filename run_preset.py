@@ -14,6 +14,7 @@ from filters import (
     explode_vins_on_raw,
     delete_duplicates,
     filter_address_present,
+    filter_cobuyers,
     filter_name_present,
     filter_out_of_state,
     filter_model_year,
@@ -21,10 +22,10 @@ from filters import (
     filter_distance,
     filter_corporate,
 )
-from write_results import write_xlsx
+from write_results import write_xlsx, write_multi_sheet
 
 
-def run_pipeline(input_csv_path: str) -> Tuple[pd.DataFrame, str]:
+def run_pipeline(input_csv_path: str, with_audits: bool = False) -> Tuple[pd.DataFrame, str]:
     raw = pd.read_csv(input_csv_path, dtype=str, keep_default_na=False)
     # Track original CSV row numbers (header is line 1)
     raw["__ROWNUM"] = (raw.reset_index().index + 2).astype(int)
@@ -49,13 +50,25 @@ def run_pipeline(input_csv_path: str) -> Tuple[pd.DataFrame, str]:
         print(f"  {k}: {src}")
 
     steps = []
+    # Track drops per step for optional multi-sheet audit
+    audits: dict[str, pd.DataFrame] = {}
     steps.append(("initial", len(can_df)))
+
+    # Add a stable row id for tracking drops across steps
+    can_df = can_df.copy()
+    can_df["___IDX_ALL"] = range(len(can_df))
 
     # Corporate/dealer exclusion
     if PRESETS.get("exclude_corporate"):
+        before_df = can_df.copy()
         before = len(can_df)
         can_df, removed = filter_corporate(can_df)
         steps.append(("exclude_corporate", before, len(can_df)))
+        if with_audits:
+            dropped_mask = ~before_df["___IDX_ALL"].isin(can_df["___IDX_ALL"])
+            audits["Dropped_exclude_corporate"] = before_df.loc[dropped_mask].copy()
+
+    # Co-buyer exclusion removed per spec; handled via negative keywords in mapping
 
     # Name present
     if PRESETS.get("name_present"):
@@ -73,6 +86,7 @@ def run_pipeline(input_csv_path: str) -> Tuple[pd.DataFrame, str]:
 
     # Address present
     if PRESETS.get("address_present"):
+        before_df = can_df.copy()
         before = len(can_df)
         # Debug: compute mask before filtering to show what will be dropped
         a1 = can_df["Address1"].fillna("").astype(str).str.strip() if "Address1" in can_df.columns else None
@@ -101,33 +115,59 @@ def run_pipeline(input_csv_path: str) -> Tuple[pd.DataFrame, str]:
                 print(f"ADDRESS DROPPED: failed to write CSV: {e}")
         can_df, removed = filter_address_present(can_df)
         steps.append(("address_present", before, len(can_df)))
+        if with_audits:
+            dropped_mask = ~before_df["___IDX_ALL"].isin(can_df["___IDX_ALL"])
+            audits["Dropped_address_present"] = before_df.loc[dropped_mask].copy()
 
     # Out of state
     if PRESETS.get("delete_out_of_state"):
+        before_df = can_df.copy()
         before = len(can_df)
         can_df, removed = filter_out_of_state(can_df, PRESETS.get("home_state"))
         steps.append(("out_of_state", before, len(can_df)))
+        if with_audits:
+            dropped_mask = ~before_df["___IDX_ALL"].isin(can_df["___IDX_ALL"])
+            audits["Dropped_out_of_state"] = before_df.loc[dropped_mask].copy()
 
     # Model year
+    # Model year window: keep between min_year and max_year inclusive when enabled
     my = PRESETS.get("model_year_filter", {})
     if my.get("enabled"):
+        before_df = can_df.copy()
         before = len(can_df)
-        can_df, removed = filter_model_year(can_df, my.get("operator", "newer"), my.get("year"))
-        steps.append(("model_year", before, len(can_df)))
+        miny = my.get("min_year")
+        maxy = my.get("max_year")
+        if miny is not None:
+            # Inclusive lower bound: >= miny implemented as > (miny-1)
+            can_df, _ = filter_model_year(can_df, "newer", (miny - 1))
+        if maxy is not None:
+            can_df, _ = filter_model_year(can_df, "older", maxy + 1)
+        steps.append(("model_year_window", before, len(can_df)))
+        if with_audits:
+            dropped_mask = ~before_df["___IDX_ALL"].isin(can_df["___IDX_ALL"])
+            audits["Dropped_model_year"] = before_df.loc[dropped_mask].copy()
 
     # Delivery age
     da = PRESETS.get("delivery_age_filter", {})
     if da.get("enabled"):
+        before_df = can_df.copy()
         before = len(can_df)
         can_df, removed = filter_delivery_age(can_df, da.get("months", 18))
         steps.append(("delivery_age", before, len(can_df)))
+        if with_audits:
+            dropped_mask = ~before_df["___IDX_ALL"].isin(can_df["___IDX_ALL"])
+            audits["Dropped_delivery_age"] = before_df.loc[dropped_mask].copy()
 
     # Distance
     df_conf = PRESETS.get("distance_filter", {})
     if df_conf.get("enabled"):
+        before_df = can_df.copy()
         before = len(can_df)
         can_df, removed = filter_distance(can_df, df_conf.get("max_miles", 100))
         steps.append(("distance", before, len(can_df)))
+        if with_audits:
+            dropped_mask = ~before_df["___IDX_ALL"].isin(can_df["___IDX_ALL"])
+            audits["Dropped_distance"] = before_df.loc[dropped_mask].copy()
 
     # VIN diagnostics before dedupe
     if "VIN" in can_df.columns:
@@ -195,12 +235,31 @@ def run_pipeline(input_csv_path: str) -> Tuple[pd.DataFrame, str]:
         if "___IDX" in can_df.columns:
             can_df = can_df.drop(columns=["___IDX"])
         steps.append(("dedupe", before, len(can_df)))
+        if with_audits:
+            audits["Dropped_dedupe"] = df_before.loc[drop_mask].copy()
 
     # Enforce canonical output order; drop columns not in the list
     present = [c for c in CANONICAL_OUTPUT_ORDER if c in can_df.columns]
     out_df = can_df.loc[:, present].copy()
 
     out_path = write_xlsx(out_df, input_csv_path)
+    if with_audits:
+        # Build a multi-sheet workbook with dropped rows per step
+        try:
+            base_dir = os.path.dirname(os.path.abspath(input_csv_path))
+            base_name = os.path.splitext(os.path.basename(input_csv_path))[0]
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            audit_xlsx = os.path.join(base_dir, f"{base_name}_audits_{ts}.xlsx")
+            # Choose a readable set of columns for audits
+            def pick_cols(df: pd.DataFrame) -> pd.DataFrame:
+                cols = [c for c in ["__ROWNUM", "Store", "VIN", "Deal_Number", "FullName", "Address1", "City", "State", "Zip", "Year", "DeliveryDate"] if c in df.columns]
+                return df[cols] if cols else df
+            audits_trimmed = {k: pick_cols(v) for k, v in audits.items() if isinstance(v, pd.DataFrame) and not v.empty}
+            if audits_trimmed:
+                write_multi_sheet(audits_trimmed, input_csv_path, audit_xlsx)
+                print(f"AUDITS: wrote per-step drops to {audit_xlsx}")
+        except Exception as ex:
+            print(f"AUDITS: failed to write multi-sheet workbook: {ex}")
     # Print debug steps
     try:
         for step in steps:
@@ -216,10 +275,12 @@ def run_pipeline(input_csv_path: str) -> Tuple[pd.DataFrame, str]:
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) < 2:
-        print("Usage: python run_preset.py <input_csv_path>")
-        sys.exit(1)
-    df, path = run_pipeline(sys.argv[1])
+    import argparse
+    parser = argparse.ArgumentParser(description="Run fixed-preset sales sheet filtering")
+    parser.add_argument("input_csv_path", help="Path to input CSV")
+    parser.add_argument("--with-audits", action="store_true", help="Also write multi-sheet workbook of per-step dropped rows")
+    args = parser.parse_args()
+    df, path = run_pipeline(args.input_csv_path, with_audits=args.with_audits)
     print(f"Wrote {len(df)} rows to {path}")
 
 

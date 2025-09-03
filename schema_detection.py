@@ -118,7 +118,9 @@ def _is_zip_value(v: str) -> bool:
 
 
 STREET_SUFFIXES = {
-    "ST","STREET","RD","ROAD","AVE","AV","AVENUE","BLVD","DR","DRIVE","LN","LANE","CT","COURT","HWY","HIGHWAY","PKWY","WAY","TER","TERRACE","PL","PLACE","CIR","CIRCLE","TRL","TRAIL","LOOP"
+    "ST","STREET","RD","ROAD","AVE","AV","AVENUE","BLVD","DR","DRIVE","LN","LANE","CT","COURT","HWY","HIGHWAY","PKWY","WAY","TER","TERRACE","PL","PLACE","CIR","CIRCLE","TRL","TRAIL","LOOP",
+    "BND","BEND","CV","COVE","CMN","COMMONS","SQ","SQUARE","RUN","PASS","ALY","ALLEY","XING","CROSSING","HL","HILL","HOLW","HOLLOW","MDW","MEADOW","RTE","ROUTE","VLG","VILLAGE","RIV","RIVER",
+    "CRK","CREEK","GRV","GROVE","GDNS","GARDENS","IS","ISLAND","LNDG","LANDING","LK","LAKE","LGT","LIGHT","MTN","MOUNTAIN","PR","PRAIRIE","PT","POINT","RDG","RIDGE","STA","STATION","VIS","VISTA"
 }
 
 
@@ -153,7 +155,11 @@ def header_score(canonical: str, header_norm: str) -> int:
     # Apply negative keyword penalty for misleading columns
     negatives = NEGATIVE_KEYWORDS.get(canonical, set())
     if any(tok in header_norm.split() for tok in negatives) or any(tok in header_norm for tok in negatives):
-        base = max(0, base - 20)
+        penalty = 20
+        # Stronger penalty for Store to avoid mapping fees/ids as Store
+        if canonical == "Store":
+            penalty = 40
+        base = max(0, base - penalty)
     # Apply small boost for positive keywords
     positives = POSITIVE_KEYWORDS.get(canonical, set())
     if any(tok in header_norm for tok in positives):
@@ -183,7 +189,7 @@ def value_pattern_score(canonical: str, series: pd.Series) -> int:
     if canonical == "Zip":
         hits = values.str.contains(ZIP_RE).sum()
         return 2 if hits > 0 else 0
-    if canonical in {"Distance", "Mileage", "Delivery_Miles", "Year"}:
+    if canonical in {"Distance", "Mileage", "Delivery_Miles"}:
         # Numeric leaning
         def looks_numeric(v: str) -> bool:
             v = v.replace(",", "").replace(" ", "")
@@ -191,6 +197,14 @@ def value_pattern_score(canonical: str, series: pd.Series) -> int:
 
         nums = values.apply(looks_numeric).sum()
         return 2 if nums > 0 else 0
+    if canonical == "Year":
+        # Must look like plausible model year (e.g., 19xx or 20xx within range)
+        try:
+            parsed = pd.to_numeric(values.str.replace(r"[^0-9]", "", regex=True), errors="coerce")
+            hits = parsed.between(1980, 2030).sum()
+            return 3 if hits > 0 else 0
+        except Exception:
+            return 0
     if canonical in {"DeliveryDate"}:
         # Try pandas datetime parse success rate
         try:

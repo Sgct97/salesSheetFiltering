@@ -32,38 +32,44 @@ CANONICAL_OUTPUT_ORDER = [
 
 # ===== Synonyms (normalized, case/punct-insensitive used in detection) =====
 SYNONYMS = {
-    "Store": {"store", "rooftop", "location", "franchise", "dealer name", "store name", "rooftop name", "location name", "dealership"},
-    "Deal_Number": {"deal_number", "deal#", "dealno", "deal", "ro", "rono", "ro#", "stockdeal"},
-    "CustomerID": {"cust_no", "customerid", "custid", "cid", "dmsid", "customer_number", "customerno", "accountid"},
-    "First_Name": {"first", "firstname", "givenname"},
-    "Last_Name": {"last", "lastname", "surname", "familyname"},
-    "FullName": {"full name", "fullname", "name", "customer name", "customername", "contact name", "contactname"},
+    "Store": {"store", "rooftop", "location", "franchise", "dealer name", "store name", "rooftop name", "location name", "dealership", "dealer", "rooftop id", "dlr", "dealership name"},
+    "Deal_Number": {"deal_number", "deal#", "dealno", "deal", "ro", "rono", "ro#", "stockdeal", "deal id", "deal num", "deal number", "doc#", "doc no"},
+    "CustomerID": {"cust_no", "customerid", "custid", "cid", "dmsid", "customer_number", "customerno", "accountid", "account id", "acctid", "clientid"},
+    "First_Name": {"firstname", "givenname", "first name", "buyer first", "primary first"},
+    "Last_Name": {"lastname", "surname", "familyname", "last name", "buyer last", "primary last"},
+    "FullName": {"full name", "fullname", "customer name", "customername", "contact name", "contactname", "buyer name", "primary name"},
+    # Co-buyer fields (kept internal; used for exclusion and not output)
+    "Co_First_Name": {"co first", "co_first", "co-buyer first", "cobuyer first", "co buyer first", "cofirstname", "co first name", "co-buyer firstname"},
+    "Co_Last_Name": {"co last", "co_last", "co-buyer last", "cobuyer last", "co buyer last", "colastname", "co last name", "co-buyer lastname"},
+    "Co_FullName": {"co buyer", "co-buyer", "cobuyer", "co name", "co fullname", "co full name", "co-buyer name", "co-buyer fullname"},
     "Email": {"email", "emailaddress", "e-mail"},
-    "Home_Phone": {"home", "homephone"},
-    "Mobile_Phone": {"phonecell", "mobile", "cell", "cellphone", "mobilephone"},
-    "Work_Phone": {"work", "workphone", "businessphone"},
-    "Phone2": {"phone2", "altphone", "secondaryphone", "otherphone"},
+    "Home_Phone": {"home", "homephone", "home phone", "residence phone"},
+    "Mobile_Phone": {"phonecell", "mobile", "cell", "cellphone", "mobilephone", "mobile phone", "cell phone"},
+    "Work_Phone": {"work", "workphone", "businessphone", "work phone", "office phone", "business phone"},
+    "Phone2": {"phone2", "altphone", "secondaryphone", "otherphone", "alternate phone", "alt phone"},
     "Address1": {
         "street", "address", "address1", "addr1", "streetaddress",
-        "address line 1", "addressline1", "customer address", "customeraddress"
+        "address line 1", "addressline1", "customer address", "customeraddress",
+        "mailing address", "street addr", "primary address", "residential address"
     },
     "Address2": {
         "address2", "addr2", "address line 2", "addressline2",
-        "suite", "ste", "unit", "apt", "apartment", "po box", "p.o. box", "pobox"
+        "suite", "ste", "unit", "apt", "apartment", "po box", "p.o. box", "pobox",
+        "building", "bldg", "floor", "fl", "room", "rm"
     },
-    "City": {"city", "town", "municipality", "locality"},
-    "State": {"state", "st", "province", "region"},
-    "Zip": {"zip", "zip5", "zipcode", "postalcode", "postcode"},
-    "VIN": {"vin", "vehicleid"},
-    "Make": {"make", "manufacturer"},
-    "Model": {"model", "vehiclemodel", "series", "trim"},
-    "Year": {"year", "modelyear", "vehicleyear"},
+    "City": {"city", "town", "municipality", "locality", "city name"},
+    "State": {"state", "st", "province", "region", "state/province", "state code"},
+    "Zip": {"zip", "zip5", "zipcode", "postalcode", "postcode", "zip code", "postal code"},
+    "VIN": {"vin", "vehicleid", "vehicle id", "vin number"},
+    "Make": {"make", "manufacturer", "brand", "oem"},
+    "Model": {"model", "vehiclemodel", "series", "trim", "model name"},
+    "Year": {"year", "modelyear", "vehicleyear", "model year"},
     "DeliveryDate": {"del_date", "deliverydate", "sold_date", "solddate", "sale_date", "saledate", "date"},
     "Delivery_Miles": {"del_miles", "deliverymiles", "delivery_mileage", "miles_at_delivery"},
     "Distance": {"dist", "distance", "milesaway", "distance_to_dealer", "customerdistance"},
     "Vehicle_Condition": {"newused", "condition", "stocktype", "vehicletype", "nu", "n/u"},
-    "Mileage": {"mileage", "odometer", "odo", "currentmileage", "current_odometer"},
-    "Term": {"term", "termmonths", "financeterm", "leaseterm"},
+    "Mileage": {"mileage", "odometer", "odo", "currentmileage", "current_odometer", "miles", "odometer reading"},
+    "Term": {"term", "termmonths", "financeterm", "leaseterm", "term months", "months term"},
 }
 
 # Negative keywords to de-prioritize misleading header matches for specific canonicals
@@ -72,15 +78,21 @@ NEGATIVE_KEYWORDS = {
     "Deal_Number": {"type", "status", "fee", "fees", "amount", "total", "balance"},
     "Address1": {"line 2", "address2", "addr2", "bank", "billing", "mailing", "finance", "lien"},
     "Address2": {"line 1", "address1", "addr1"},
-    "City": {"co-buyer", "cobuyer", "co buyer", "bank", "billing", "mailing", "shipping", "lien", "finance"},
-    # Penalize generic meta columns for City mapping
     "City": {"co-buyer", "cobuyer", "co buyer", "bank", "billing", "mailing", "shipping", "lien", "finance", "type", "file", "status", "code"},
     "VIN": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2"},
     # Penalize VIN mapping on obviously wrong headers
     "VIN": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2", "make", "model", "type", "file", "explosion"},
     "Make": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2"},
     "Model": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2"},
-    "Year": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2"},
+    "Year": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2", "model", "series", "trim"},
+    # Prevent names mapping to date/activity columns
+    "First_Name": {"date", "entry", "activity", "pay", "payment", "due"},
+    "Last_Name": {"date", "entry", "activity", "pay", "payment", "due"},
+    "FullName": {"date", "entry", "activity", "pay", "payment", "due"},
+    # Prevent co-buyer columns from being mapped to primary buyer fields
+    "First_Name": {"co", "co buyer", "co-buyer", "cobuyer", "co first", "co_first", "cofirst"},
+    "Last_Name": {"co", "co buyer", "co-buyer", "cobuyer", "co last", "co_last", "colast"},
+    "FullName": {"co", "co buyer", "co-buyer", "cobuyer", "co name", "co fullname", "co full name"},
 }
 
 # Positive keywords to boost likely matches
@@ -139,10 +151,12 @@ PRESETS = {
     "name_present": False,     # Disabled: do not exclude rows for name presence in Milestone 1
     "delete_out_of_state": True,
     "home_state": "WA",       # default; can be changed later
-    "model_year_filter": {"enabled": False, "operator": "newer", "year": None},
+    # Enable model year window 2013..2024 inclusive
+    "model_year_filter": {"enabled": True, "min_year": 2013, "max_year": 2024},
     "delivery_age_filter": {"enabled": True, "months": 18},
     "distance_filter": {"enabled": True, "max_miles": 100},
     "exclude_corporate": True,
+    "exclude_cobuyers": False,  # disabled by default for Milestone 1
     "preserve_all_columns": False,
     "po_box_counts_as_address": True,
 }

@@ -250,6 +250,28 @@ def filter_name_present(df_can: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
     return out, len(df_can) - len(out)
 
 
+def filter_cobuyers(df_can: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+    """Drop rows that appear to contain multiple names (co-buyer patterns) when names are combined in a single field.
+    Heuristics: contains ' & ', ' and ', or '/' as person joiners in the effective name.
+    Do NOT treat commas as co-buyer signals (to avoid 'LAST, FIRST' false positives).
+    If explicit co-buyer columns are present (Co_First_Name/Co_Last_Name/Co_FullName), do not drop.
+    """
+    # Build an effective name string
+    full = _safe_str(df_can["FullName"]) if "FullName" in df_can.columns else pd.Series(["" for _ in range(len(df_can))])
+    first = _safe_str(df_can["First_Name"]) if "First_Name" in df_can.columns else pd.Series(["" for _ in range(len(df_can))])
+    last = _safe_str(df_can["Last_Name"]) if "Last_Name" in df_can.columns else pd.Series(["" for _ in range(len(df_can))])
+    eff = full
+    empty_full = eff.eq("")
+    eff = eff.where(~empty_full, (first + " " + last).str.replace(r"\s+", " ", regex=True).str.strip())
+    # If explicit co-buyer columns exist, do not drop based on combined name pattern
+    if any(c in df_can.columns for c in ["Co_First_Name", "Co_Last_Name", "Co_FullName"]):
+        return df_can, 0
+    # Co-buyer patterns (exclude comma to avoid 'LAST, FIRST' names)
+    cobuyer_mask = eff.str.contains(r"\s+&\s+|\sand\s|\s*/\s*", regex=True, case=False, na=False)
+    out = df_can.loc[~cobuyer_mask].copy()
+    return out, int(cobuyer_mask.sum())
+
+
 def filter_out_of_state(df_can: pd.DataFrame, home_state: str) -> Tuple[pd.DataFrame, int]:
     if "State" not in df_can.columns:
         return df_can, 0
@@ -315,9 +337,10 @@ def _corporate_score(text: str) -> int:
     score = 0
     t = text.upper()
     tokens = re.split(r"[^A-Z0-9]+", t)
-    if any(b in t for b in EXCLUDE_BRANDS):
+    # Word-boundary match to avoid false positives (e.g., DAVIS vs AVIS)
+    if any(re.search(r"\\b" + re.escape(b) + r"\\b", t) for b in EXCLUDE_BRANDS):
         score += 3
-    if any(k in t for k in EXCLUDE_KEYWORDS):
+    if any(re.search(r"\\b" + re.escape(k) + r"\\b", t) for k in EXCLUDE_KEYWORDS):
         score += 2
     if any(s in tokens for s in CORPORATE_SUFFIXES):
         score += 2
@@ -334,12 +357,31 @@ def filter_corporate(df_can: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
     scores = []
     for i in range(len(df_can)):
         s = 0
-        s += _corporate_score(full.iloc[i])
-        s += _corporate_score(first.iloc[i] + " " + last.iloc[i])
-        s += _corporate_score(store.iloc[i])
-        # Person override: simple Title-Case two token name reduces score
-        if first.iloc[i].istitle() and last.iloc[i].istitle() and first.iloc[i] and last.iloc[i]:
+        text_full = str(full.iloc[i])
+        text_first_last = str(first.iloc[i] + " " + last.iloc[i])
+
+        # Score ONLY name fields
+        s += _corporate_score(text_full)
+        s += _corporate_score(text_first_last)
+
+        # Person-likeness (two title-cased tokens in First/Last)
+        person_like = bool(first.iloc[i]) and bool(last.iloc[i]) and first.iloc[i].istitle() and last.iloc[i].istitle()
+        if person_like:
             s -= 3
+
+        # HARD RULE: if name fields contain OEM/brand or corporate suffix/keywords → force corporate
+        try:
+            name_fields_up = (text_full.upper(), text_first_last.upper())
+            # Substring match in names (more permissive to avoid misses)
+            oem_hit = any(any(tok in f for tok in EXCLUDE_OEMS) for f in name_fields_up)
+            brand_hit = any(any(tok in f for tok in EXCLUDE_BRANDS) for f in name_fields_up)
+            keyword_hit = any(any(tok in f for tok in EXCLUDE_KEYWORDS) for f in name_fields_up)
+            tokens_split = [re.split(r"[^A-Z0-9]+", f) for f in name_fields_up]
+            suffix_hit = any(any(suf in parts for suf in CORPORATE_SUFFIXES) for parts in tokens_split)
+            if oem_hit or brand_hit or keyword_hit or suffix_hit:
+                s = 999
+        except Exception:
+            pass
         scores.append(s)
     keep = pd.Series(scores) < 3
     out = df_can.loc[keep].copy()
