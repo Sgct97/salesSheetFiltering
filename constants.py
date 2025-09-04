@@ -46,7 +46,13 @@ SYNONYMS = {
     "Home_Phone": {"home", "homephone", "home phone", "residence phone"},
     "Mobile_Phone": {"phonecell", "mobile", "cell", "cellphone", "mobilephone", "mobile phone", "cell phone"},
     "Work_Phone": {"work", "workphone", "businessphone", "work phone", "office phone", "business phone"},
-    "Phone2": {"phone2", "altphone", "secondaryphone", "otherphone", "alternate phone", "alt phone"},
+    "Phone2": {"phone2", "altphone", "secondaryphone", "otherphone", "alternate phone", "alt phone", "phone", "phone number", "telephone", "tel"},
+    # Phone area codes (used only for preprocessing merge)
+    "Home_AreaCode": {"home area code", "home area", "home ac", "homeareacode", "res area", "res area code"},
+    "Mobile_AreaCode": {"mobile area code", "cell area code", "cell area", "mobile area", "cell ac"},
+    "Work_AreaCode": {"work area code", "office area code", "work area", "office area", "business area"},
+    "Phone2_AreaCode": {"alt area code", "alternate area code", "secondary area code", "other area code"},
+    "AreaCode": {"area code", "areacode", "area", "ac"},
     "Address1": {
         "street", "address", "address1", "addr1", "streetaddress",
         "address line 1", "addressline1", "customer address", "customeraddress",
@@ -57,17 +63,18 @@ SYNONYMS = {
         "suite", "ste", "unit", "apt", "apartment", "po box", "p.o. box", "pobox",
         "building", "bldg", "floor", "fl", "room", "rm"
     },
-    "City": {"city", "town", "municipality", "locality", "city name"},
-    "State": {"state", "st", "province", "region", "state/province", "state code"},
-    "Zip": {"zip", "zip5", "zipcode", "postalcode", "postcode", "zip code", "postal code"},
+    "City": {"city", "town", "municipality", "locality", "city name", "csz city"},
+    "State": {"state", "st", "province", "region", "state/province", "state code", "csz state"},
+    "Zip": {"zip", "zip5", "zipcode", "postalcode", "postcode", "zip code", "postal code", "csz zip"},
     "VIN": {"vin", "vehicleid", "vehicle id", "vin number"},
     "Make": {"make", "manufacturer", "brand", "oem"},
     "Model": {"model", "vehiclemodel", "series", "trim", "model name"},
     "Year": {"year", "modelyear", "vehicleyear", "model year"},
-    "DeliveryDate": {"del_date", "deliverydate", "sold_date", "solddate", "sale_date", "saledate", "date"},
+    "DeliveryDate": {"del_date", "deliverydate", "sold_date", "solddate", "sale_date", "saledate", "date", "delivery", "delivered"},
     "Delivery_Miles": {"del_miles", "deliverymiles", "delivery_mileage", "miles_at_delivery"},
     "Distance": {"dist", "distance", "milesaway", "distance_to_dealer", "customerdistance"},
-    "Vehicle_Condition": {"newused", "condition", "stocktype", "vehicletype", "nu", "n/u"},
+    # Vehicle_Condition should map to New/Used status; avoid 'vehicle type'
+    "Vehicle_Condition": {"newused", "condition", "stocktype", "nu", "n/u"},
     "Mileage": {"mileage", "odometer", "odo", "currentmileage", "current_odometer", "miles", "odometer reading"},
     "Term": {"term", "termmonths", "financeterm", "leaseterm", "term months", "months term"},
 }
@@ -78,13 +85,14 @@ NEGATIVE_KEYWORDS = {
     "Deal_Number": {"type", "status", "fee", "fees", "amount", "total", "balance"},
     "Address1": {"line 2", "address2", "addr2", "bank", "billing", "mailing", "finance", "lien"},
     "Address2": {"line 1", "address1", "addr1"},
-    "City": {"co-buyer", "cobuyer", "co buyer", "bank", "billing", "mailing", "shipping", "lien", "finance", "type", "file", "status", "code"},
+    "City": {"co-buyer", "cobuyer", "co buyer", "bank", "billing", "mailing", "shipping", "lien", "finance", "type", "file", "status", "code", "first", "last", "name", "full name", "fullname", "model", "series", "trim", "vin", "stock", "body"},
     "VIN": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2"},
     # Penalize VIN mapping on obviously wrong headers
     "VIN": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2", "make", "model", "type", "file", "explosion"},
     "Make": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2"},
     "Model": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2"},
     "Year": {"trade", "trade-in", "tradein", "t1", "t2", "trade 1", "trade 2", "model", "series", "trim"},
+    "Vehicle_Condition": {"type", "vehicle type", "body", "bodystyle", "style"},
     # Prevent names mapping to date/activity columns
     "First_Name": {"date", "entry", "activity", "pay", "payment", "due"},
     "Last_Name": {"date", "entry", "activity", "pay", "payment", "due"},
@@ -149,8 +157,8 @@ PRESETS = {
     "vin_explosion": True,  # only if a VIN explosion source column is present
     "address_present": True,  # Require Address1 + City + State + Zip (PO BOX counts)
     "name_present": False,     # Disabled: do not exclude rows for name presence in Milestone 1
-    "delete_out_of_state": True,
-    "home_state": "WA",       # default; can be changed later
+    "delete_out_of_state": False,
+    "home_state": "CA",       # default; can be changed later
     # Enable model year window 2013..2024 inclusive
     "model_year_filter": {"enabled": True, "min_year": 2013, "max_year": 2024},
     "delivery_age_filter": {"enabled": True, "months": 18},

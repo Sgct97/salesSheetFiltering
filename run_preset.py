@@ -25,10 +25,22 @@ from filters import (
 from write_results import write_xlsx, write_multi_sheet
 
 
+def _read_any(input_path: str) -> pd.DataFrame:
+    ext = os.path.splitext(input_path)[1].lower()
+    if ext in {".csv", ".txt"}:
+        df = pd.read_csv(input_path, dtype=str, keep_default_na=False)
+    elif ext in {".xlsx", ".xlsm"}:
+        df = pd.read_excel(input_path, dtype=str)
+        df = df.fillna("")
+    else:
+        raise ValueError(f"Unsupported input extension: {ext}")
+    df = df.copy()
+    df["__ROWNUM"] = (df.reset_index().index + 2).astype(int)
+    return df
+
+
 def run_pipeline(input_csv_path: str, with_audits: bool = False) -> Tuple[pd.DataFrame, str]:
-    raw = pd.read_csv(input_csv_path, dtype=str, keep_default_na=False)
-    # Track original CSV row numbers (header is line 1)
-    raw["__ROWNUM"] = (raw.reset_index().index + 2).astype(int)
+    raw = _read_any(input_csv_path)
 
     # Optional VIN explosion on raw
     vin_col = None
@@ -156,7 +168,18 @@ def run_pipeline(input_csv_path: str, with_audits: bool = False) -> Tuple[pd.Dat
         steps.append(("delivery_age", before, len(can_df)))
         if with_audits:
             dropped_mask = ~before_df["___IDX_ALL"].isin(can_df["___IDX_ALL"])
-            audits["Dropped_delivery_age"] = before_df.loc[dropped_mask].copy()
+            # Include raw date columns and effective date for clarity
+            dd = before_df.get("DeliveryDate")
+            sold = before_df.get("SoldDate") if "SoldDate" in before_df.columns else None
+            sale = before_df.get("SaleDate") if "SaleDate" in before_df.columns else None
+            last = before_df.get("Last_Date") if "Last_Date" in before_df.columns else None
+            eff = pd.to_datetime(before_df.get("DeliveryDate"), errors="coerce")
+            for col in ["SoldDate", "SaleDate", "Last_Date"]:
+                if col in before_df.columns:
+                    eff = eff.combine_first(pd.to_datetime(before_df[col], errors="coerce"))
+            dropped_da = before_df.loc[dropped_mask].copy()
+            dropped_da["__EffectiveDate"] = eff.loc[dropped_mask]
+            audits["Dropped_delivery_age"] = dropped_da
 
     # Distance
     df_conf = PRESETS.get("distance_filter", {})
@@ -252,7 +275,7 @@ def run_pipeline(input_csv_path: str, with_audits: bool = False) -> Tuple[pd.Dat
             audit_xlsx = os.path.join(base_dir, f"{base_name}_audits_{ts}.xlsx")
             # Choose a readable set of columns for audits
             def pick_cols(df: pd.DataFrame) -> pd.DataFrame:
-                cols = [c for c in ["__ROWNUM", "Store", "VIN", "Deal_Number", "FullName", "Address1", "City", "State", "Zip", "Year", "DeliveryDate"] if c in df.columns]
+                cols = [c for c in ["__ROWNUM", "Store", "VIN", "Deal_Number", "FullName", "Address1", "City", "State", "Zip", "Year", "DeliveryDate", "__EffectiveDate"] if c in df.columns]
                 return df[cols] if cols else df
             audits_trimmed = {k: pick_cols(v) for k, v in audits.items() if isinstance(v, pd.DataFrame) and not v.empty}
             if audits_trimmed:

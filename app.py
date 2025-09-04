@@ -8,8 +8,13 @@ from run_preset import run_pipeline
 
 def select_and_run():
     path = filedialog.askopenfilename(
-        title="Select CSV",
-        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        title="Select file",
+        filetypes=[
+            ("Supported", "*.csv;*.xlsx;*.xlsm"),
+            ("CSV", "*.csv"),
+            ("Excel", "*.xlsx;*.xlsm"),
+            ("All files", "*.*"),
+        ],
     )
     if not path:
         return
@@ -27,8 +32,8 @@ def main():
     root = tk.Tk()
     root.title("Dealership Sales Filter - Milestone 1")
     root.geometry("420x180")
-    tk.Label(root, text="Pick a CSV and run fixed preset filters.").pack(pady=20)
-    tk.Button(root, text="Select CSV and Run", command=select_and_run).pack(pady=10)
+    tk.Label(root, text="Pick a file (.csv/.xlsx/.xlsm) and run fixed preset filters.").pack(pady=20)
+    tk.Button(root, text="Select File and Run", command=select_and_run).pack(pady=10)
     tk.Label(root, text="Output: timestamped XLSX with canonical columns.").pack(pady=10)
     root.mainloop()
 

@@ -369,17 +369,36 @@ def filter_corporate(df_can: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
         if person_like:
             s -= 3
 
-        # HARD RULE: if name fields contain OEM/brand or corporate suffix/keywords → force corporate
+        # HARD RULES (names only):
+        # 1) If 2+ OEM tokens appear in the name → corporate
+        # 2) If any OEM/brand token appears AND any dealer keyword appears → corporate
+        # 3) If any corporate suffix present → corporate
+        # 4) Otherwise, person-like names are preserved
         try:
             name_fields_up = (text_full.upper(), text_first_last.upper())
-            # Substring match in names (more permissive to avoid misses)
-            oem_hit = any(any(tok in f for tok in EXCLUDE_OEMS) for f in name_fields_up)
-            brand_hit = any(any(tok in f for tok in EXCLUDE_BRANDS) for f in name_fields_up)
-            keyword_hit = any(any(tok in f for tok in EXCLUDE_KEYWORDS) for f in name_fields_up)
-            tokens_split = [re.split(r"[^A-Z0-9]+", f) for f in name_fields_up]
-            suffix_hit = any(any(suf in parts for suf in CORPORATE_SUFFIXES) for parts in tokens_split)
-            if oem_hit or brand_hit or keyword_hit or suffix_hit:
+            tokens = []
+            for f in name_fields_up:
+                tokens.extend([t for t in re.split(r"[^A-Z0-9]+", f) if t])
+            token_set = set(tokens)
+
+            oem_hits = token_set.intersection({o.upper() for o in EXCLUDE_OEMS})
+            brand_hits = token_set.intersection({b.upper() for b in EXCLUDE_BRANDS})
+            keyword_hits = token_set.intersection({k.upper() for k in EXCLUDE_KEYWORDS})
+            suffix_hits = token_set.intersection({suf.upper() for suf in CORPORATE_SUFFIXES})
+
+            # Guardrails for single OEM presence:
+            # - not person-like OR has dealer keywords OR has corporate suffix OR ALL-CAPS multi-token
+            name_all_caps = any(f.isupper() and len(f.split()) >= 2 for f in (text_full, text_first_last))
+
+            if len(oem_hits) >= 2:
                 s = 999
+            elif oem_hits and (not person_like or keyword_hits or suffix_hits or name_all_caps):
+                s = 999
+            elif brand_hits:
+                s = 999
+            elif suffix_hits:
+                s = 999
+            # Else leave score as-is (person-like override already applied above)
         except Exception:
             pass
         scores.append(s)

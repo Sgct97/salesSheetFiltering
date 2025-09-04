@@ -350,6 +350,151 @@ def detect_schema(df: pd.DataFrame) -> Tuple[Dict[str, str], List[str]]:
         # Nothing else to do here; precedence already influenced by header token check
         pass
 
+    # Prefer synthetic CSZ splits when present and better than chosen mapping
+    def _maybe_use_csz(canon: str, like_fn, min_thresh: float) -> None:
+        col = mapping.get(canon)
+        csz_col = f"__CSZ_{canon}"
+        try:
+            if csz_col in df.columns:
+                chosen_like = like_fn(df[col]) if col in df.columns else 0.0
+                csz_like = like_fn(df[csz_col])
+                chosen_norm = header_norms.get(col or "", "")
+                is_composite_header = "city state zip" in chosen_norm
+                if (is_composite_header or chosen_like < min_thresh) and csz_like >= min_thresh:
+                    mapping[canon] = csz_col
+                    warnings.append(f"Remapped {canon} to {csz_col} based on value-likeness ({csz_like:.2f})")
+        except Exception:
+            pass
+
+    _maybe_use_csz("State", _looks_like_state, 0.7)
+    _maybe_use_csz("Zip", _looks_like_zip, 0.7)
+    _maybe_use_csz("City", _looks_like_city, 0.5)
+
+    # Confidence gating for critical fields with actionable errors
+    def top_candidates_str(canon: str, k: int = 3) -> str:
+        pairs = candidates.get(canon, [])
+        if not pairs:
+            return "<none>"
+        pairs_sorted = sorted(pairs, key=lambda x: -x[1])[:k]
+        return ", ".join([f"{col} (score {score})" for col, score in pairs_sorted])
+
+    def series_of(canon: str) -> Optional[pd.Series]:
+        col = mapping.get(canon)
+        if not col:
+            return None
+        try:
+            return df[col]
+        except Exception:
+            return None
+
+    # Address1
+    addr1_s = series_of("Address1")
+    if addr1_s is not None:
+        street_like = _looks_like_street(addr1_s)
+        # Allow lower threshold if PO BOX is common
+        po_rate = 0.0
+        try:
+            vals = sample_series_values(addr1_s)
+            po_rate = vals.str.contains(r"(?i)\bP\.?\s*O\.?\s*BOX\b|\bPO\s*BOX\b", regex=True).mean()
+        except Exception:
+            pass
+        min_thresh = 0.2 if po_rate >= 0.2 else 0.3
+        if street_like < min_thresh:
+            raise SchemaError(
+                "Address1 mapping is low confidence: street-likeness "
+                f"{street_like:.2f}. Top candidates: {top_candidates_str('Address1')}"
+            )
+
+    # City requires co-occurrence with valid State/Zip
+    city_s = series_of("City")
+    if city_s is not None:
+        # Guardrail: if City header clearly refers to a name column, prefer CSZ split
+        try:
+            chosen_col = mapping.get("City")
+            chosen_norm = header_norms.get(chosen_col or "", "")
+            looks_like_name_header = any(tok in chosen_norm for tok in ["first", "last", "fullname", "customer name"]) or chosen_norm in {"first name", "last name"}
+            looks_like_vehicle_header = any(tok in chosen_norm for tok in ["model", "series", "trim"]) or chosen_norm in {"model"}
+            eq_rate_to_last = 0.0
+            if "Last_Name" in mapping and mapping["Last_Name"] in df.columns:
+                try:
+                    eq_rate_to_last = (df[mapping["Last_Name"]].fillna("").astype(str).str.strip() == city_s.fillna("").astype(str).str.strip()).mean()
+                except Exception:
+                    eq_rate_to_last = 0.0
+            if looks_like_name_header or looks_like_vehicle_header or eq_rate_to_last >= 0.2:
+                if "__CSZ_City" in df.columns and _looks_like_city(df["__CSZ_City"]) >= 0.3:
+                    mapping["City"] = "__CSZ_City"
+                    city_s = df["__CSZ_City"]
+                    warnings.append("Remapped City to __CSZ_City due to name-like chosen column")
+                else:
+                    raise SchemaError(
+                        "City mapping appears name/model-like (equality with Last_Name or header). "
+                        "Provide a City column or a composite City/State/Zip that parses into __CSZ_City."
+                    )
+        except Exception:
+            pass
+        city_like = _looks_like_city(city_s)
+        co_rate = 0.0
+        try:
+            nonempty = city_s.fillna("").astype(str).str.strip() != ""
+            if state_mask is not None and zip_mask is not None:
+                co_rate = (nonempty & state_mask & zip_mask).mean()
+        except Exception:
+            pass
+        if city_like < 0.5 or co_rate < 0.3:
+            raise SchemaError(
+                "City mapping is low confidence: city-like "
+                f"{city_like:.2f}, co-occurrence with valid State/Zip {co_rate:.2f}. "
+                f"Top candidates: {top_candidates_str('City')}"
+            )
+
+    # State
+    state_s = series_of("State")
+    if state_s is not None:
+        state_like = _looks_like_state(state_s)
+        if state_like < 0.7:
+            raise SchemaError(
+                "State mapping is low confidence: state-like "
+                f"{state_like:.2f}. Top candidates: {top_candidates_str('State')}"
+            )
+
+    # Zip
+    zip_s = series_of("Zip")
+    if zip_s is not None:
+        zip_like = _looks_like_zip(zip_s)
+        if zip_like < 0.7:
+            raise SchemaError(
+                "Zip mapping is low confidence: zip-like "
+                f"{zip_like:.2f}. Top candidates: {top_candidates_str('Zip')}"
+            )
+
+    # VIN
+    vin_s = series_of("VIN")
+    if vin_s is not None:
+        try:
+            values = sample_series_values(vin_s)
+            frac17 = values.astype(str).str.contains(VIN_RE).mean()
+        except Exception:
+            frac17 = 0.0
+        if frac17 < 0.01:
+            raise SchemaError(
+                "VIN mapping is low confidence: fraction of 17-char VINs "
+                f"{frac17:.2%}. Top candidates: {top_candidates_str('VIN')}"
+            )
+
+    # DeliveryDate (warn or fail)
+    dd_s = series_of("DeliveryDate")
+    if dd_s is not None:
+        try:
+            parsed = pd.to_datetime(sample_series_values(dd_s), errors="coerce")
+            dd_rate = parsed.notna().mean()
+        except Exception:
+            dd_rate = 0.0
+        if dd_rate < 0.2:
+            raise SchemaError(
+                "DeliveryDate mapping is low confidence: parse success rate "
+                f"{dd_rate:.2%}. Top candidates: {top_candidates_str('DeliveryDate')}"
+            )
+
     return mapping, warnings
 
 
