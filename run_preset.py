@@ -300,10 +300,18 @@ if __name__ == "__main__":
     import sys
     import argparse
     parser = argparse.ArgumentParser(description="Run fixed-preset sales sheet filtering")
-    parser.add_argument("input_csv_path", help="Path to input CSV")
+    parser.add_argument("input_paths", nargs="+", help="One or more input files (.csv/.xlsx/.xlsm)")
     parser.add_argument("--with-audits", action="store_true", help="Also write multi-sheet workbook of per-step dropped rows")
     args = parser.parse_args()
-    df, path = run_pipeline(args.input_csv_path, with_audits=args.with_audits)
-    print(f"Wrote {len(df)} rows to {path}")
+    # Preserve prior behavior when a single file is given
+    exit_code = 0
+    for p in args.input_paths:
+        try:
+            df, path = run_pipeline(p, with_audits=args.with_audits)
+            print(f"Wrote {len(df)} rows to {path}")
+        except Exception as e:
+            print(f"ERROR: {p}: {e}")
+            exit_code = 2
+    sys.exit(exit_code)
 
 
